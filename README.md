@@ -43,7 +43,7 @@ These models can be downloaded from [BaiduYun](https://pan.baidu.com/s/1iVZ2GfIh
 
 Before training and evaluating, there are some parameters should be noticed.
 
-* (1) **'--config'** or **'-c'**: The config of RA-GCN. You must use this parameter in the command line or the program will output an error. There are 8 configs given in the **configs** folder, which can be illustrated in the following tabel.
+* (1) **'--config'** or **'-c'**: The config of ResGCN. You must use this parameter in the command line or the program will output an error. There are 16 configs given in the **configs** folder, which can be illustrated in the following tabel.
 
 | config    | 1001   | 1002   | 1003    | 1004    | 1005   | 1006   | 1007    | 1008    |
 | :-------: | :----: | :----: | :-----: | :-----: | :----: | :----: | :-----: | :-----: |
