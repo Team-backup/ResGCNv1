@@ -120,8 +120,8 @@ class Shift_gcn(nn.Module):
         
 
     def forward(self, x0):
+        # print(x0.shape)
         n, c, t, v = x0.size()
-        # print('In Shift_gcn: ', x0.size())
         x = x0.permute(0,2,3,1).contiguous()
 
         # shift1
@@ -129,8 +129,6 @@ class Shift_gcn(nn.Module):
         x = torch.index_select(x, 1, self.shift_in)
         x = x.view(n*t,v,c) # [9600, 25, 3]
         x = x * (torch.tanh(self.Feature_Mask)+1)
-        # print('x.shape: ', x.shape, self.Feature_Mask.shape)
-        # pdb.set_trace()
 
         x = torch.einsum('nwc,cd->nwd', (x, self.Linear_weight)).contiguous() # nt,v,c
         x = x + self.Linear_bias
@@ -163,12 +161,60 @@ class TCN_GCN_unit(nn.Module):
             self.residual = tcn(in_channels, out_channels, kernel_size=1, stride=stride)
 
     def forward(self, x):
-        # print('tcn1: ', self.tcn1(self.gcn1(x)).size())
-        # if self.residual:
-            # print('residual: ', self.residual(x).size())
         x = self.tcn1(self.gcn1(x)) + self.residual(x)
         return self.relu(x)
 
+
+class BaseModel(nn.Module):
+    def __init__(self, num_class=155, num_point=17, num_person=2, \
+        graph=None, graph_args=dict(), in_channels=3, aux_num_class=3):
+        super(BaseModel, self).__init__()
+
+        if graph is None:
+            raise ValueError()
+        else:
+            Graph = import_class(graph)
+            self.graph = Graph(**graph_args)
+
+        A = self.graph.A
+        self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
+
+        self.l1 = TCN_GCN_unit(3, 64, A, residual=False)
+        self.l2 = TCN_GCN_unit(64, 64, A)
+        self.l3 = TCN_GCN_unit(64, 64, A)
+        self.l4 = TCN_GCN_unit(64, 64, A)
+        self.l5 = TCN_GCN_unit(64, 128, A, stride=2)
+        self.l6 = TCN_GCN_unit(128, 128, A)
+        self.l7 = TCN_GCN_unit(128, 128, A)
+        self.l8 = TCN_GCN_unit(128, 256, A, stride=2)
+        self.l9 = TCN_GCN_unit(256, 256, A)
+        self.l10 = TCN_GCN_unit(256, 256, A)
+
+        
+    def forward(self, x):
+        N, C, T, V, M = x.size()
+
+        x = x.permute(0, 4, 3, 1, 2).contiguous().view(N, M * V * C, T)
+        x = self.data_bn(x)
+        x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(N * M, C, T, V)
+
+        x = self.l1(x)
+        x = self.l2(x)
+        x = self.l3(x)
+        x = self.l4(x)
+        x = self.l5(x)
+        x = self.l6(x)
+        x = self.l7(x)
+        x = self.l8(x)
+        x = self.l9(x)
+        x = self.l10(x)
+
+        # N*M,C,T,V
+        c_new = x.size(1)
+        x = x.view(N, M, c_new, -1)
+        x = x.mean(3).mean(1)
+
+        return x
 
 class Model(nn.Module):
     def __init__(self, num_class=155, num_point=17, num_person=2, graph=None, graph_args=dict(), in_channels=3):
@@ -215,11 +261,28 @@ class Model(nn.Module):
         x = self.l8(x)
         x = self.l9(x)
         x = self.l10(x)
-        # print('l10: ',x.shape)
+
         # N*M,C,T,V
         c_new = x.size(1)
         x = x.view(N, M, c_new, -1)
         x = x.mean(3).mean(1)
-        f = x
-        # print('before fc: ', x.shape)
-        return self.fc(x), f
+
+        return self.fc(x)
+        
+# class TTModel(nn.Module):
+#     def __init__(self, num_class=155, num_point=17, num_person=2, \
+#         graph=None, graph_args=dict(), in_channels=3, aux_num_class=3):
+#         super(TTModel, self).__init__()
+#         self.num_class = num_class
+#         self.in_channels = in_channels
+#         self.num_point = num_point
+#         self.aux_num_class = aux_num_class
+
+#         self.fea_encoder = BaseModel(num_class, num_point, num_person, graph, graph_args, in_channels, aux_num_class)
+#         self.data_bn2 = nn.BatchNorm1d(aux_num_class)
+
+#     def forward(self, x1, x2):
+#         x1 = self.fea_encoder(x1)
+#         x2 = self.fea_encoder(x2)
+
+#         return x1, x2

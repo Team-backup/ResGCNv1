@@ -1,20 +1,33 @@
 import argparse
 import pickle
-from tqdm import tqdm
+import pdb
 import sys
 
+from tqdm import tqdm
 sys.path.extend(['../'])
 from preprocess import pre_normalization
 
-# 用于训练的目标id
-training_subjects = [
-    1, 2, 4, 5, 8, 9, 13, 14, 15, 16, 17, 18, 19, 25, 27, 28, 31, 34, 35, 38
-]
-training_cameras = [2, 3]   # 用于训练的相机id
-max_body_true = 2           # 视野中的人数，最多为2
-max_body_kinect = 4         # 相机数
-num_joint = 25              # 关节点数
-max_frame = 300             # 最大帧数
+
+def get_train_subjects():
+    import os
+    data_dir = './data/UAV/skeleton/train' 
+    videos = os.listdir(data_dir)
+    subjects = []
+    for v in videos:
+        vname = v[1:4]
+        subjects.append(int(vname))
+    return subjects
+training_subjects = get_train_subjects()
+# pdb.set_trace()
+# training_subjects = [1, 2, 4, 5, 8, 9, 13, 14, 15, 16, 17, 18, 19, 25, 27, 28, 31, 34, 35, \
+                    # 38, 45, 46, 47, 49, 50, 52, 53, 54, 55, 56, 57, 58, 59, 70, 74, 78, \
+                    # 80, 81, 82, 83, 84, 85, 86, 89, 91, 92, 93, 94, 95, 97, 98, 100, 103]
+# #training_cameras = [2, 3]
+# training_setups = [2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32]
+max_body_true = 2
+max_body_kinect = 4
+num_joint = 17
+max_frame = 600
 
 import numpy as np
 import os
@@ -91,7 +104,7 @@ def read_xyz(file, max_body=4, num_joint=25):  # 取了前两个body
     return data
 
 
-def gendata(data_path, out_path, ignored_sample_path=None, benchmark='xview', part='eval'):
+def gendata(data_path, out_path, ignored_sample_path=None, benchmark='xsetup', part='eval'):
     if ignored_sample_path != None:
         with open(ignored_sample_path, 'r') as f:
             ignored_samples = [
@@ -101,9 +114,16 @@ def gendata(data_path, out_path, ignored_sample_path=None, benchmark='xview', pa
         ignored_samples = []
     sample_name = []
     sample_label = []
+    # print('---------------------')
+    # print(data_path)
     for filename in os.listdir(data_path):
+        # print(ignored_samples)
         if filename in ignored_samples:
             continue
+        # print('==============')
+        # print(filename)
+        setup_number = int(
+            filename[filename.find('S') + 1:filename.find('S') + 4])
         action_class = int(
             filename[filename.find('A') + 1:filename.find('A') + 4])
         subject_id = int(
@@ -111,8 +131,9 @@ def gendata(data_path, out_path, ignored_sample_path=None, benchmark='xview', pa
         camera_id = int(
             filename[filename.find('C') + 1:filename.find('C') + 4])
 
-        if benchmark == 'xview':
-            istraining = (camera_id in training_cameras)
+        if benchmark == 'xsetup':
+            istraining = (setup_number in training_setups)
+            # istraining = (camera_id in training_cameras)
         elif benchmark == 'xsub':
             istraining = (subject_id in training_subjects)
         else:
@@ -144,12 +165,12 @@ def gendata(data_path, out_path, ignored_sample_path=None, benchmark='xview', pa
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NTU-RGB-D Data Converter.')
-    parser.add_argument('--data_path', default='data/nturgbd_raw/nturgb+d_skeletons/')  # 数据存放目录
+    parser.add_argument('--data_path', default='./data/nturgbd120_raw')
     parser.add_argument('--ignored_sample_path',
-                        default='data/nturgbd_raw/NTU_RGBD_samples_with_missing_skeletons.txt') # 缺失关节点的data
-    parser.add_argument('--out_folder', default='data/ntu/')    # 数据保存目录
+                        default='../data/nturgbd120_raw/NTU_RGBD120_samples_with_missing_skeletons.txt')
+    parser.add_argument('--out_folder', default='../data/ntu120/')
 
-    benchmark = ['xsub', 'xview']
+    benchmark = ['xsetup', 'xsub']
     part = ['train', 'val']
     arg = parser.parse_args()
 

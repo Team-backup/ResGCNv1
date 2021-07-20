@@ -24,7 +24,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR
 import random
 import inspect
 import torch.backends.cudnn as cudnn
-import torch.nn.functional as F
 
 
 def init_seed(_):
@@ -50,13 +49,12 @@ def get_parser():
     parser.add_argument('-Experiment_name', default='')
     parser.add_argument(
         '--config',
-        # default='./config/uav/k_fold_train_joint.yaml',
         default='./config/uav/train_joint.yaml',
         help='path to the configuration file')
 
     # processor
     parser.add_argument(
-        '--phase', default='test', help='must be train or test')
+        '--phase', default='val', help='must be train or test')
     parser.add_argument(
         '--save-score',
         type=str2bool,
@@ -120,7 +118,7 @@ def get_parser():
         help='the arguments of model')
     parser.add_argument(
         '--weights',
-        default= 'save_models/UAV/all-train-data/all-train-data-200-frames-94-49590.pt', #'save_models/UAV/1-fold/K-fold-train-1-114-40020.pt',#'save_models/UAV/random_sample/continue-200-frames-129-60450.pt',
+        default= 'save_models/UAV/random_sample/random_sample-67-31620.pt',
         help='the weights for network initialization')
     parser.add_argument(
         '--ignore-weights',
@@ -179,7 +177,7 @@ class Processor():
 
     def __init__(self, arg):
 
-        arg.model_saved_name = "./save_models/UAV/all-train-data/"+arg.Experiment_name
+        arg.model_saved_name = "./save_models/UAV/random_sample/"+arg.Experiment_name
         arg.work_dir = "./work_dir/"+arg.Experiment_name
         self.arg = arg
         self.save_arg()
@@ -380,7 +378,7 @@ class Processor():
             # forward
             # print(data.shape)
             start = time.time()
-            output, f = self.model(data)
+            output = self.model(data)
             network_time = time.time()-start
 
             loss = self.loss(output, label)
@@ -400,8 +398,8 @@ class Processor():
 
             if self.global_step % self.arg.log_interval == 0:
                 self.print_log(
-                    '\tBatch({}/{}) done. Loss: {:.4f}  Acc:{:4f} lr:{:.6f}  network_time: {:.4f}  acc: {:.4f}'.format(
-                        batch_idx, len(loader), loss.data, acc.data, self.lr, network_time, acc))
+                    '\tBatch({}/{}) done. Loss: {:.4f}  lr:{:.6f}  network_time: {:.4f}  acc: {:.4f}'.format(
+                        batch_idx, len(loader), loss.data, self.lr, network_time, acc))
             timer['statistics'] += self.split_time()
 
         # statistics of time consumption and loss
@@ -436,11 +434,11 @@ class Processor():
             step = 0
             process = tqdm(self.data_loader[ln])
 
-            indexs, top5_cls, top5_p, labels, predicts = [], [], [], [], []
-            # features = np.zeros((5574, 256))
-            idx = 0
+            indexs, predicts, labels = [], [], []
             # Input: [Batch, Channel, Time, Number, Memeber]
             for batch_idx, (data, label, index) in enumerate(process):
+                # print(data.shape, label.shape)
+                # pdb.set_trace()
                 indexs.append(index.tolist())
                 with torch.no_grad():
                     data = Variable(
@@ -453,22 +451,7 @@ class Processor():
                         # volatile=True)
 
                 with torch.no_grad():
-                    output, f = self.model(data)
-
-                # features[idx] = f.cpu().numpy()
-                idx += 1
-                output = F.softmax(output, dim=1)
-                reco_top5 = torch.topk(output,5)[1]
-                # print(reco_top5.shape)
-                reco_top5_p = torch.topk(output,5)[0]
-
-                reco_top5_tolist = reco_top5.tolist()
-                for i in reco_top5_tolist:
-                    top5_cls.append(i)
-
-                top5_pro_list_tolist = reco_top5_p.tolist()
-                for i in top5_pro_list_tolist:
-                    top5_p.append(i)
+                    output = self.model(data)
 
                 loss = self.loss(output, label)
                 score_frag.append(output.data.cpu().numpy())
@@ -479,7 +462,6 @@ class Processor():
                 predicts.append(predict_label.cpu().tolist())
                 labels.append(label.cpu().tolist())
 
-
                 if wrong_file is not None or result_file is not None:
                     predict = list(predict_label.cpu().numpy())
                     true = list(label.data.cpu().numpy())
@@ -488,19 +470,11 @@ class Processor():
                             f_r.write(str(x) + ',' + str(true[i]) + '\n')
                         if x != true[i] and wrong_file is not None:
                             f_w.write(str(index[i]) + ',' + str(x) + ',' + str(true[i]) + '\n')
-            # top5_cls = [n for x in top5_cls for n in x]
-            # top5_p = [n for x in top5_p for n in x]
-            # print(top5_cls)
-            # print(len(features), features[0].shape)
-            # np.save('result/k-fold/2-fold-shift-gcn-6465-features.npy', np.array(features))
-            # save_result(indexs, predicts, 'result/k-fold/', '2-fold-shift-gcn-6465-test-top1.csv')
-            # save_top5_result(top5_cls, top5_p, 5574, 'result/k-fold/', '2-fold-shift-gcn-validation-top5.csv')
-            # save_label_predict(indexs, labels, predicts, 'result/', 'shift-gcn-top1-6905.csv')
+
+            save_label_predict(indexs, labels, predicts, 'result/', 'label_predict.csv')
             score = np.concatenate(score_frag)
-            # print(score.shape)
 
             accuracy = self.data_loader[ln].dataset.top_k(score, 1)
-            # print(accuracy)
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
                 score_dict = dict(
@@ -542,9 +516,7 @@ class Processor():
             loss_total = 0
             step = 0
             process = tqdm(self.data_loader[ln])
-            indexs, top5_cls, top5_p, labels, predicts = [], [], [], [], []
-            features = np.zeros((16724, 256))
-            idx = 0
+
             # Input: [Batch, Channel, Time, Number, Memeber]
             for batch_idx, (data, index) in enumerate(process):
                 indexs.append(index.tolist())
@@ -554,37 +526,17 @@ class Processor():
                         requires_grad=False)
 
                 with torch.no_grad():
-                    output, f = self.model(data)
-                
-                _, predict_label = torch.max(output.data, 1)
-                predicts.append(predict_label.cpu().tolist())
-                
-                features[idx] = f.cpu().numpy()
-                idx += 1
-                output = F.softmax(output, dim=1)
-                reco_top5 = torch.topk(output,5)[1]
-                reco_top5_p = torch.topk(output,5)[0]
-
-                reco_top5_tolist = reco_top5.tolist()
-                for i in reco_top5_tolist:
-                    top5_cls.append(i)
-
-                top5_pro_list_tolist = reco_top5_p.tolist()
-                for i in top5_pro_list_tolist:
-                    top5_p.append(i)
+                    output = self.model(data)
 
                 score_frag.append(output.data.cpu().numpy())
 
-                # print(predict_label.cpu().numpy())
-                # pdb.set_trace()
+                _, predict_label = torch.max(output.data, 1)
                 step += 1
-                # labels.append(label.cpu().tolist())
+                scores.append(score_frag)
+                res_labels.append(predict_label.cpu().tolist())
             # print(type(score_frag))
             # save_score(score_frag, 'result/', 'Shift-GCN-All-Data-Train.npy')
-            np.save('result/shift-gcn-all-train.npy', np.array(features))
-            # save_result(indexs, predicts, 'result/test/', '2-fold-shift-gcn-6465-test-top1.csv')
-            # save_top5_result(top5_cls, top5_p, 4500, 'result/test/', '2-fold-shift-gcn-6640-test-top5.csv')
-            # save_label_predict(indexs, labels, predicts, 'result/', 'shift-gcn-top1-6905.csv')
+            save_result(indexs, res_labels, 'result/', 'predict.csv')
 
     def start(self):
         if self.arg.phase == 'train':

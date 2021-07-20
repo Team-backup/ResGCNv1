@@ -13,7 +13,7 @@ training_subjects = [1, 2, 4, 5, 8, 9, 13, 14, 15, 16, 17, 18, 19, 25, 27, 28, 3
 training_setups = [2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32]
 max_body_true = 2
 max_body_kinect = 4
-num_joint = 25
+num_joint = 17
 max_frame = 300
 
 import numpy as np

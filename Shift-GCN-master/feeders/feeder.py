@@ -9,22 +9,10 @@ sys.path.extend(['../'])
 from feeders import tools
 
 
-class Feeder(Dataset):
-    def __init__(self, data_path, label_path,
+class K_Fold_Feeder(Dataset):
+    def __init__(self, data_path, label_path, flag,
                  random_choose=False, random_shift=False, random_move=False,
                  window_size=-1, normalization=False, debug=False, use_mmap=True):
-        """
-        
-        :param data_path: 
-        :param label_path: 
-        :param random_choose: If true, randomly choose a portion of the input sequence
-        :param random_shift: If true, randomly pad zeros at the begining or end of sequence
-        :param random_move: 
-        :param window_size: The length of the output sequence
-        :param normalization: If true, normalize input sequence
-        :param debug: If true, only use the first 100 samples
-        :param use_mmap: If true, use mmap mode to load data, which can save the running memory
-        """
 
         self.debug = debug
         self.data_path = data_path
@@ -35,20 +23,128 @@ class Feeder(Dataset):
         self.window_size = window_size
         self.normalization = normalization
         self.use_mmap = use_mmap
+        self.flag = flag
+        self.load_data()
+        if normalization:
+            self.get_mean_map()
+
+    def load_data(self):
+        index1 = np.load('./files/L1.npy')
+        index2 = np.load('./files/L2.npy')
+        index3 = np.load('./files/L3.npy')
+
+        # data: N C V T M
+        if self.flag != 'test':
+            try:
+                with open(self.label_path) as f:
+                    self.sample_name, self.label = pickle.load(f)
+            except:
+                # for pickle file from python2
+                with open(self.label_path, 'rb') as f:
+                    self.sample_name, self.label = pickle.load(f, encoding='latin1')
+
+        # load data
+        if self.use_mmap:
+            self.data = np.load(self.data_path, mmap_mode='r')
+        else:
+            self.data = np.load(self.data_path)
+        if self.debug:
+            self.label = self.label[0:100]
+            self.data = self.data[0:100]
+            self.sample_name = self.sample_name[0:100]
+
+        if self.flag=='train':
+
+            train_index = np.concatenate((index1,index3),axis=0).tolist()
+            self.data = self.data[train_index,:,:,:,:]
+            self.label = [self.label[i] for i in train_index]
+            self.sample_name = [self.sample_name[i] for i in train_index]
+
+        elif self.flag=='val':
+            eval_index = index2.tolist()
+            self.data = self.data[eval_index,:,:,:,:]
+            self.label = [self.label[i] for i in eval_index]
+            self.sample_name = [self.sample_name[i] for i in eval_index]
+        else:
+            self.data = np.load(self.data_path, mmap_mode='r')
+        self.data = self.data[:, :, :200, :, :]
+
+    def get_mean_map(self):
+        data = self.data
+        N, C, T, V, M = data.shape
+        self.mean_map = data.mean(axis=2, keepdims=True).mean(axis=4, keepdims=True).mean(axis=0)
+        self.std_map = data.transpose((0, 2, 4, 1, 3)).reshape((N * T * M, C * V)).std(axis=0).reshape((C, 1, V, 1))
+
+    def __len__(self):
+        return self.data.shape[0]
+
+    def __iter__(self):
+        return self
+
+    def __getitem__(self, index):
+        data_numpy = self.data[index]
+        
+        if self.flag!='test':
+            label = self.label[index]
+        data_numpy = np.array(data_numpy)
+        # print(data_numpy.shape)
+        # pdb.set_trace()
+
+        if self.normalization:
+            data_numpy = (data_numpy - self.mean_map) / self.std_map
+        if self.random_shift:
+            data_numpy = tools.random_shift(data_numpy)
+        if self.random_choose:
+            data_numpy = tools.random_choose(data_numpy, self.window_size)
+        elif self.window_size > 0:
+            data_numpy = tools.auto_pading(data_numpy, self.window_size)
+        if self.random_move:
+            data_numpy = tools.random_move(data_numpy)
+        if self.flag !='test':
+            return data_numpy, label, index
+        else:
+            return data_numpy, index
+
+    def top_k(self, score, top_k):
+        rank = score.argsort()
+        # print(rank)
+        # print(rank.shape, self.label.shape)
+        hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(self.label)]
+        # print(hit_top_k)
+        # pdb.set_trace()
+
+        return sum(hit_top_k) * 1.0 / len(hit_top_k)
+
+
+class Feeder2(Dataset):
+    def __init__(self, data_path, label_path, flag,
+                 random_choose=False, random_shift=False, random_move=False,
+                 window_size=-1, normalization=False, debug=False, use_mmap=True):
+
+        self.debug = debug
+        self.data_path = data_path
+        self.label_path = label_path
+        self.random_choose = random_choose
+        self.random_shift = random_shift
+        self.random_move = random_move
+        self.window_size = window_size
+        self.normalization = normalization
+        self.use_mmap = use_mmap
+        self.flag = flag
         self.load_data()
         if normalization:
             self.get_mean_map()
 
     def load_data(self):
         # data: N C V T M
-
-        try:
-            with open(self.label_path) as f:
-                self.sample_name, self.label = pickle.load(f)
-        except:
-            # for pickle file from python2
-            with open(self.label_path, 'rb') as f:
-                self.sample_name, self.label = pickle.load(f, encoding='latin1')
+        if self.flag != 'test':
+            try:
+                with open(self.label_path) as f:
+                    self.sample_name, self.label = pickle.load(f)
+            except:
+                # for pickle file from python2
+                with open(self.label_path, 'rb') as f:
+                    self.sample_name, self.label = pickle.load(f, encoding='latin1')
 
         # load data
         if self.use_mmap:
@@ -67,17 +163,19 @@ class Feeder(Dataset):
         self.std_map = data.transpose((0, 2, 4, 1, 3)).reshape((N * T * M, C * V)).std(axis=0).reshape((C, 1, V, 1))
 
     def __len__(self):
-        return len(self.label)
+        return self.data.shape[0]
 
     def __iter__(self):
         return self
 
     def __getitem__(self, index):
         data_numpy = self.data[index]
-        label = self.label[index]
+        
+        if self.flag!='test':
+            label = self.label[index]
         data_numpy = np.array(data_numpy)
-        print(data_numpy.shape)
-        pdb.set_trace()
+        # print(data_numpy.shape)
+        # pdb.set_trace()
 
         if self.normalization:
             data_numpy = (data_numpy - self.mean_map) / self.std_map
@@ -89,12 +187,19 @@ class Feeder(Dataset):
             data_numpy = tools.auto_pading(data_numpy, self.window_size)
         if self.random_move:
             data_numpy = tools.random_move(data_numpy)
-
-        return data_numpy, label, index
+        if self.flag !='test':
+            return data_numpy, label, index
+        else:
+            return data_numpy, index
 
     def top_k(self, score, top_k):
         rank = score.argsort()
+        # print(rank)
+        # print(rank.shape, self.label.shape)
         hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(self.label)]
+        # print(hit_top_k)
+        # pdb.set_trace()
+
         return sum(hit_top_k) * 1.0 / len(hit_top_k)
 
 
@@ -188,12 +293,111 @@ def test(data_path, label_path, vid=None, graph=None, is_3d=False):
                 plt.pause(0.01)
 
 
-if __name__ == '__main__':
-    import os
+class Feeder(Dataset):
+    def __init__(self, data_path, label_path, flag,
+                 random_choose=False, random_shift=False, random_move=False,
+                 window_size=-1, normalization=False, debug=False, use_mmap=True):
+        """
+        
+        :param data_path: 
+        :param label_path: 
+        :param random_choose: If true, randomly choose a portion of the input sequence
+        :param random_shift: If true, randomly pad zeros at the begining or end of sequence
+        :param random_move: 
+        :param window_size: The length of the output sequence
+        :param normalization: If true, normalize input sequence
+        :param debug: If true, only use the first 100 samples
+        :param use_mmap: If true, use mmap mode to load data, which can save the running memory
+        """
 
-    os.environ['DISPLAY'] = 'localhost:10.0'
-    data_path = "../data/ntu/xview/val_data_joint.npy"
-    label_path = "../data/ntu/xview/val_label.pkl"
-    graph = 'graph.ntu_rgb_d.Graph'
-    test(data_path, label_path, vid='S004C001P003R001A032', graph=graph, is_3d=True)
+        self.debug = debug
+        self.data_path = data_path
+        self.label_path = label_path
+        self.random_choose = random_choose
+        self.random_shift = random_shift
+        self.random_move = random_move
+        self.window_size = window_size
+        self.normalization = normalization
+        self.use_mmap = use_mmap
+        self.flag = flag
+        self.load_data()
+        if normalization:
+            self.get_mean_map()
+
+    def load_data(self):
+        # data: N C V T M
+        if self.flag != 'test':
+            try:
+                with open(self.label_path) as f:
+                    self.sample_name, self.label = pickle.load(f)
+            except:
+                # for pickle file from python2
+                with open(self.label_path, 'rb') as f:
+                    self.sample_name, self.label = pickle.load(f, encoding='latin1')
+
+        # load data
+        if self.use_mmap:
+            self.data = np.load(self.data_path, mmap_mode='r')
+        else:
+            self.data = np.load(self.data_path)
+        if self.debug:
+            self.label = self.label[0:100]
+            self.data = self.data[0:100]
+            self.sample_name = self.sample_name[0:100]
+        self.data = self.data[:, :, :200, :, :]
+        
+    def get_mean_map(self):
+        data = self.data
+        N, C, T, V, M = data.shape
+        self.mean_map = data.mean(axis=2, keepdims=True).mean(axis=4, keepdims=True).mean(axis=0)
+        self.std_map = data.transpose((0, 2, 4, 1, 3)).reshape((N * T * M, C * V)).std(axis=0).reshape((C, 1, V, 1))
+
+    def __len__(self):
+        return self.data.shape[0]
+
+    def __iter__(self):
+        return self
+
+    def __getitem__(self, index):
+        data_numpy = self.data[index]
+        
+        if self.flag!='test':
+            label = self.label[index]
+        data_numpy = np.array(data_numpy)
+        # print(data_numpy.shape)
+        # pdb.set_trace()
+
+        if self.normalization:
+            data_numpy = (data_numpy - self.mean_map) / self.std_map
+        if self.random_shift:
+            data_numpy = tools.random_shift(data_numpy)
+        if self.random_choose:
+            data_numpy = tools.random_choose(data_numpy, self.window_size)
+        elif self.window_size > 0:
+            data_numpy = tools.auto_pading(data_numpy, self.window_size)
+        if self.random_move:
+            data_numpy = tools.random_move(data_numpy)
+        if self.flag !='test':
+            return data_numpy, label, index
+        else:
+            return data_numpy, index
+
+    def top_k(self, score, top_k):
+        rank = score.argsort()
+        # print(rank)
+        # print(rank.shape, self.label.shape)
+        hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(self.label)]
+        # print(hit_top_k)
+        # pdb.set_trace()
+
+        return sum(hit_top_k) * 1.0 / len(hit_top_k)
+
+# if __name__ == '__main__':
+#     import os
+
+#     os.environ['DISPLAY'] = 'localhost:10.0'
+#     data_path = "../data/ntu/xview/val_data_joint.npy"
+#     label_path = "../data/ntu/xview/val_label.pkl"
+#     graph = 'graph.ntu_rgb_d.Graph'
+#     test(data_path, label_path, vid='S004C001P003R001A032', graph=graph, is_3d=True)
 

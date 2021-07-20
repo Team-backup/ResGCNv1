@@ -6,7 +6,6 @@ import time
 import numpy as np
 import yaml
 import pdb
-import csv
 import pickle
 from collections import OrderedDict
 # torch
@@ -15,16 +14,16 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
 from tqdm import tqdm
-from tools.uavhuman_pose_dataset import *
-from tools.save import *
+from utils.misc import *
 
 # from tensorboardX import SummaryWriter
 import shutil
-from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR
 import random
 import inspect
 import torch.backends.cudnn as cudnn
-import torch.nn.functional as F
+
+from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR
+from model.SSHead import *
 
 
 def init_seed(_):
@@ -50,13 +49,12 @@ def get_parser():
     parser.add_argument('-Experiment_name', default='')
     parser.add_argument(
         '--config',
-        # default='./config/uav/k_fold_train_joint.yaml',
-        default='./config/uav/train_joint.yaml',
+        default='./config/uav/tt_train_data_joint.yaml',
         help='path to the configuration file')
 
     # processor
     parser.add_argument(
-        '--phase', default='test', help='must be train or test')
+        '--phase', default='train', help='must be train or test')
     parser.add_argument(
         '--save-score',
         type=str2bool,
@@ -95,7 +93,7 @@ def get_parser():
 
     # feeder
     parser.add_argument(
-        '--feeder', default='feeder.feeder', help='data loader will be used')
+        '--feeder', default='tt_feeder.feeder', help='data loader will be used')
     parser.add_argument(
         '--num-worker',
         type=int,
@@ -120,7 +118,7 @@ def get_parser():
         help='the arguments of model')
     parser.add_argument(
         '--weights',
-        default= 'save_models/UAV/all-train-data/all-train-data-200-frames-94-49590.pt', #'save_models/UAV/1-fold/K-fold-train-1-114-40020.pt',#'save_models/UAV/random_sample/continue-200-frames-129-60450.pt',
+        default= '',#'save_models/UAV/reproduce/UAV-Human Train-95-44640.pt',
         help='the weights for network initialization')
     parser.add_argument(
         '--ignore-weights',
@@ -144,7 +142,7 @@ def get_parser():
         default=[0,1],
         nargs='+',
         help='the indexes of GPUs for training or testing')
-    parser.add_argument('--optimizer', default='SGD', help='type of optimizer')
+    parser.add_argument('--optimizer', default='Adam', help='type of optimizer')
     parser.add_argument(
         '--nesterov', type=str2bool, default=False, help='use nesterov or not')
     parser.add_argument(
@@ -179,7 +177,7 @@ class Processor():
 
     def __init__(self, arg):
 
-        arg.model_saved_name = "./save_models/UAV/all-train-data/"+arg.Experiment_name
+        arg.model_saved_name = "./save_models/UAV/"+arg.Experiment_name
         arg.work_dir = "./work_dir/"+arg.Experiment_name
         self.arg = arg
         self.save_arg()
@@ -203,12 +201,13 @@ class Processor():
         self.best_acc = 0
 
     def load_data(self):
-        # from feeders.tt_feeder import Feeder
-        Feeder = import_class(self.arg.feeder)
+        print(self.arg.feeder)
+        TT_Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
         if self.arg.phase == 'train':
+            # print(self.arg.train_feeder_args)
             self.data_loader['train'] = torch.utils.data.DataLoader(
-                dataset=Feeder(**self.arg.train_feeder_args),
+                dataset=TT_Feeder(**self.arg.train_feeder_args),
                 batch_size=self.arg.batch_size,
                 shuffle=True,
                 num_workers=self.arg.num_worker,
@@ -216,7 +215,7 @@ class Processor():
                 worker_init_fn=init_seed)
         # else:
         self.data_loader['test'] = torch.utils.data.DataLoader(
-            dataset=Feeder(**self.arg.test_feeder_args),
+            dataset=TT_Feeder(**self.arg.test_feeder_args),
             batch_size=self.arg.test_batch_size,
             shuffle=False,
             num_workers=self.arg.num_worker,
@@ -226,10 +225,9 @@ class Processor():
     def load_model(self):
         output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
         self.output_device = output_device
-        Model = import_class(self.arg.model)
-        shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
-        self.model = Model(**self.arg.model_args).cuda(output_device)
+        self.extractor, self.aux_head, self.cls_head = build_model(self.arg, self.output_device)
         self.loss = nn.CrossEntropyLoss().cuda(output_device)
+        self.aux_loss = nn.CrossEntropyLoss().cuda(output_device)
 
         if self.arg.weights:
             # self.global_step = int(arg.weights[:-3].split('-')[-1])
@@ -250,28 +248,24 @@ class Processor():
                 else:
                     self.print_log('Can Not Remove Weights: {}.'.format(w))
 
-            try:
-                self.model.load_state_dict(weights)
-            except:
-                state = self.model.state_dict()
-                diff = list(set(state.keys()).difference(set(weights.keys())))
-                print('Can not find these weights:')
-                for d in diff:
-                    print('  ' + d)
-                state.update(weights)
-                self.model.load_state_dict(state)
-
         if type(self.arg.device) is list:
             if len(self.arg.device) > 1:
-                self.model = nn.DataParallel(
-                    self.model,
+                self.extractor = nn.DataParallel(
+                    self.extractor,
+                    device_ids=self.arg.device,
+                    output_device=output_device)
+                self.aux_head = nn.DataParallel(
+                    self.aux_head,
+                    device_ids=self.arg.device,
+                    output_device=output_device)
+                self.cls_head = nn.DataParallel(
+                    self.cls_head,
                     device_ids=self.arg.device,
                     output_device=output_device)
 
     def load_optimizer(self):
+        params_dict = list(self.extractor.parameters()) + list(self.aux_head.parameters()) + list(self.cls_head.parameters())
         if self.arg.optimizer == 'SGD':
-
-            params_dict = dict(self.model.named_parameters())
             params = []
 
             for key, value in params_dict.items():
@@ -293,7 +287,7 @@ class Processor():
             
         elif self.arg.optimizer == 'Adam':
             self.optimizer = optim.Adam(
-                self.model.parameters(),
+                params_dict,
                 lr=self.arg.base_lr,
                 weight_decay=self.arg.weight_decay)
         else:
@@ -349,7 +343,10 @@ class Processor():
         return split_time
 
     def train(self, epoch, save_model=False):
-        self.model.train()
+        self.extractor.train()
+        self.aux_head.train()
+        self.cls_head.train()
+
         self.print_log('Training epoch: {}'.format(epoch + 1))
         loader = self.data_loader['train']
         self.adjust_learning_rate(epoch)
@@ -358,41 +355,41 @@ class Processor():
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
         process = tqdm(loader)
 
-        if epoch >= self.arg.only_train_epoch:
-            for key, value in self.model.named_parameters():
-                if 'PA' in key:
-                    value.requires_grad = True
-                    print(key + '-require grad')
-        else:
-            for key, value in self.model.named_parameters():
-                if 'PA' in key:
-                    value.requires_grad = False
-                    print(key + '-not require grad')
-        for batch_idx, (data, label, index) in enumerate(process):
+        for batch_idx, (train_data, train_aux_label, label, test_data, test_aux_label, index) in enumerate(process):
+            self.optimizer.zero_grad()
             self.global_step += 1
-            # get data
-            # print(type(data), data.shape)
-            # pdb.set_trace()
-            data = Variable(data.float().cuda(self.output_device), requires_grad=False)
-            label = Variable(label.long().cuda(self.output_device), requires_grad=False)
+            train_data = Variable(train_data.float().cuda(self.output_device), requires_grad=False)
+            label = Variable(label.long().cuda(self.output_device),requires_grad=False)
+            train_aux_label = Variable(train_aux_label.long().cuda(self.output_device), requires_grad=False)
+
+            test_data = Variable(test_data.float().cuda(self.output_device), requires_grad=False)
+            test_aux_label = Variable(test_aux_label.long().cuda(self.output_device), requires_grad=False)
+
             timer['dataloader'] += self.split_time()
 
             # forward
-            # print(data.shape)
             start = time.time()
-            output, f = self.model(data)
+            train_features = self.extractor(train_data)
+            train_output_cls = self.cls_head(train_features)
+            train_output_aux = self.aux_head(train_features)
+
+            test_features = self.extractor(test_data)
+            test_output_aux = self.aux_head(test_features)
+
             network_time = time.time()-start
 
-            loss = self.loss(output, label)
+            train_cls_loss = self.loss(train_output_cls, label)
+            train_aux_loss = self.aux_loss(train_output_aux, train_aux_label)
+            test_aux_loss = self.aux_loss(test_output_aux, test_aux_label)
+            loss = train_cls_loss + 0.1 * train_aux_loss + 0.2 * test_aux_loss
 
             # backward
-            self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             loss_value.append(loss.data)
             timer['model'] += self.split_time()
 
-            value, predict_label = torch.max(output.data, 1)
+            value, predict_label = torch.max(train_output_cls.data, 1)
             acc = torch.mean((predict_label == label.data).float())
 
             # statistics
@@ -400,8 +397,8 @@ class Processor():
 
             if self.global_step % self.arg.log_interval == 0:
                 self.print_log(
-                    '\tBatch({}/{}) done. Loss: {:.4f}  Acc:{:4f} lr:{:.6f}  network_time: {:.4f}  acc: {:.4f}'.format(
-                        batch_idx, len(loader), loss.data, acc.data, self.lr, network_time, acc))
+                    '\tBatch({}/{}) done. Loss: {:.4f} cls_loss: {:.4f}, train_aux_loss: {:.4f} test_aux_loss: {:.4f} lr:{:.6f}  network_time: {:.4f}  acc: {:.4f}'.format(
+                        batch_idx, len(loader), loss.data, train_cls_loss.data, train_aux_loss.data, test_aux_loss.data, self.lr, network_time, acc))
             timer['statistics'] += self.split_time()
 
         # statistics of time consumption and loss
@@ -409,23 +406,26 @@ class Processor():
             k: '{:02d}%'.format(int(round(v * 100 / sum(timer.values()))))
             for k, v in timer.items()
         }
-
         if save_model:
-            state_dict = self.model.state_dict()
+            # state_dict = self.model.state_dict()
+            state_dict = {'extractor': self.extractor.state_dict(), 'aux_head': self.aux_head.state_dict(), 'cls_head': self.cls_head.state_dict(),
+            'optimizer': self.optimizer.state_dict()}
             weights = OrderedDict([[k.split('module.')[-1],
-                                    v.cpu()] for k, v in state_dict.items()])
+                                    v] for k, v in state_dict.items()])
 
             torch.save(weights, self.arg.model_saved_name + '-' + str(epoch) + '-' + str(int(self.global_step)) + '.pt')
+        # if save_model:
+            # 
+            # torch.save(weights, self.arg.model_saved_name + '-' + str(epoch) + '-' + str(int(self.global_step)) + '.pt')
 
     def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
         if wrong_file is not None:
             f_w = open(wrong_file, 'w')
         if result_file is not None:
             f_r = open(result_file, 'w')
-
-        indexs, res_labels = [], []
-
-        self.model.eval()
+        self.extractor.eval()
+        self.aux_head.eval()
+        self.cls_head.eval()
         self.print_log('Eval epoch: {}'.format(epoch + 1))
         for ln in loader_name:
             loss_value = []
@@ -436,49 +436,28 @@ class Processor():
             step = 0
             process = tqdm(self.data_loader[ln])
 
-            indexs, top5_cls, top5_p, labels, predicts = [], [], [], [], []
-            # features = np.zeros((5574, 256))
-            idx = 0
             # Input: [Batch, Channel, Time, Number, Memeber]
-            for batch_idx, (data, label, index) in enumerate(process):
-                indexs.append(index.tolist())
+            for batch_idx, (label, val_data, val_aux_label, index) in enumerate(process):
                 with torch.no_grad():
-                    data = Variable(
-                        data.float().cuda(self.output_device),
-                        requires_grad=False)
-                        # volatile=True)
-                    label = Variable(
-                        label.long().cuda(self.output_device),
-                        requires_grad=False)
-                        # volatile=True)
+                    label = Variable(label.long().cuda(self.output_device),requires_grad=False)
+                    val_data = Variable(val_data.float().cuda(self.output_device), requires_grad=False)
+                    val_aux_label = Variable(val_aux_label.long().cuda(self.output_device), requires_grad=False)
+                        #volatile=True)
 
                 with torch.no_grad():
-                    output, f = self.model(data)
+                    val_features = self.extractor(val_data)
+                    val_output_cls = self.cls_head(val_features)
+                    val_output_aux = self.aux_head(val_features)
 
-                # features[idx] = f.cpu().numpy()
-                idx += 1
-                output = F.softmax(output, dim=1)
-                reco_top5 = torch.topk(output,5)[1]
-                # print(reco_top5.shape)
-                reco_top5_p = torch.topk(output,5)[0]
+                cls_loss = self.loss(val_output_cls, label)
+                aux_loss = self.aux_loss(val_output_aux, val_aux_label)
+                loss = cls_loss + aux_loss
 
-                reco_top5_tolist = reco_top5.tolist()
-                for i in reco_top5_tolist:
-                    top5_cls.append(i)
-
-                top5_pro_list_tolist = reco_top5_p.tolist()
-                for i in top5_pro_list_tolist:
-                    top5_p.append(i)
-
-                loss = self.loss(output, label)
-                score_frag.append(output.data.cpu().numpy())
+                score_frag.append(val_output_cls.data.cpu().numpy())
                 loss_value.append(loss.data.cpu().numpy())
 
-                _, predict_label = torch.max(output.data, 1)
+                _, predict_label = torch.max(val_output_cls.data, 1)
                 step += 1
-                predicts.append(predict_label.cpu().tolist())
-                labels.append(label.cpu().tolist())
-
 
                 if wrong_file is not None or result_file is not None:
                     predict = list(predict_label.cpu().numpy())
@@ -488,19 +467,9 @@ class Processor():
                             f_r.write(str(x) + ',' + str(true[i]) + '\n')
                         if x != true[i] and wrong_file is not None:
                             f_w.write(str(index[i]) + ',' + str(x) + ',' + str(true[i]) + '\n')
-            # top5_cls = [n for x in top5_cls for n in x]
-            # top5_p = [n for x in top5_p for n in x]
-            # print(top5_cls)
-            # print(len(features), features[0].shape)
-            # np.save('result/k-fold/2-fold-shift-gcn-6465-features.npy', np.array(features))
-            # save_result(indexs, predicts, 'result/k-fold/', '2-fold-shift-gcn-6465-test-top1.csv')
-            # save_top5_result(top5_cls, top5_p, 5574, 'result/k-fold/', '2-fold-shift-gcn-validation-top5.csv')
-            # save_label_predict(indexs, labels, predicts, 'result/', 'shift-gcn-top1-6905.csv')
             score = np.concatenate(score_frag)
-            # print(score.shape)
 
             accuracy = self.data_loader[ln].dataset.top_k(score, 1)
-            # print(accuracy)
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
                 score_dict = dict(
@@ -525,66 +494,39 @@ class Processor():
                 pickle.dump(score_dict, f)
 
     def test(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
-        if wrong_file is not None:
-            f_w = open(wrong_file, 'w')
-        if result_file is not None:
-            f_r = open(result_file, 'w')
-
+        # self.net.eval()
+        self.extractor.eval()
+        self.cls_head.eval()
+        corr = []
         indexs, res_labels, scores = [], [], []
+        process = tqdm(self.data_loader['test'])
+        for batch_idx, (test_data, test_aux_label, index) in enumerate(process):
+            indexs.append(index.tolist())
+            with torch.no_grad():
+                test_data = Variable(test_data.float().cuda(self.output_device), requires_grad=False)
+                test_aux_label = Variable(test_aux_label.long().cuda(self.output_device), requires_grad=False)
+                        #volatile=True)
 
-        self.model.eval()
-        self.print_log('Eval epoch: {}'.format(epoch + 1))
-        for ln in loader_name:
-            loss_value = []
-            score_frag = []
-            right_num_total = 0
-            total_num = 0
-            loss_total = 0
-            step = 0
-            process = tqdm(self.data_loader[ln])
-            indexs, top5_cls, top5_p, labels, predicts = [], [], [], [], []
-            features = np.zeros((16724, 256))
-            idx = 0
-            # Input: [Batch, Channel, Time, Number, Memeber]
-            for batch_idx, (data, index) in enumerate(process):
-                indexs.append(index.tolist())
-                with torch.no_grad():
-                    data = Variable(
-                        data.float().cuda(self.output_device),
-                        requires_grad=False)
+            with torch.no_grad():
+                test_features = self.extractor(test_data)
+                test_output_cls = self.cls_head(test_features)
+                test_output_aux = self.aux_head(test_features)
 
-                with torch.no_grad():
-                    output, f = self.model(data)
-                
-                _, predict_label = torch.max(output.data, 1)
-                predicts.append(predict_label.cpu().tolist())
-                
-                features[idx] = f.cpu().numpy()
-                idx += 1
-                output = F.softmax(output, dim=1)
-                reco_top5 = torch.topk(output,5)[1]
-                reco_top5_p = torch.topk(output,5)[0]
+                # aux_loss = self.aux_loss(val_output_aux, val_aux_label)
+                # loss = cls_loss + aux_loss
 
-                reco_top5_tolist = reco_top5.tolist()
-                for i in reco_top5_tolist:
-                    top5_cls.append(i)
+            score_frag.append(test_output_cls.data.cpu().numpy())
+            # loss_value.append(loss.data.cpu().numpy())
 
-                top5_pro_list_tolist = reco_top5_p.tolist()
-                for i in top5_pro_list_tolist:
-                    top5_p.append(i)
-
-                score_frag.append(output.data.cpu().numpy())
-
-                # print(predict_label.cpu().numpy())
-                # pdb.set_trace()
-                step += 1
-                # labels.append(label.cpu().tolist())
+            _, predict_label = torch.max(test_output_cls.data, 1)
+            step += 1
+            scores.append(score_frag)
+            res_labels.append(predict_label.cpu().tolist())
             # print(type(score_frag))
             # save_score(score_frag, 'result/', 'Shift-GCN-All-Data-Train.npy')
-            np.save('result/shift-gcn-all-train.npy', np.array(features))
-            # save_result(indexs, predicts, 'result/test/', '2-fold-shift-gcn-6465-test-top1.csv')
-            # save_top5_result(top5_cls, top5_p, 4500, 'result/test/', '2-fold-shift-gcn-6640-test-top5.csv')
-            # save_label_predict(indexs, labels, predicts, 'result/', 'shift-gcn-top1-6905.csv')
+            save_result(indexs, res_labels, 'result/', 'tt_predict.csv')
+
+           
 
     def start(self):
         if self.arg.phase == 'train':
@@ -593,12 +535,7 @@ class Processor():
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
 
                 self.train(epoch, save_model=True)
-
-                self.eval(
-                    epoch,
-                    save_score=self.arg.save_score,
-                    loader_name=['test'])
-
+                self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
             print('best accuracy: ', self.best_acc, ' model_name: ', self.arg.model_saved_name)
 
         elif self.arg.phase == 'val':
@@ -615,19 +552,6 @@ class Processor():
             self.eval(epoch=0, save_score=self.arg.save_score, loader_name=['test'], wrong_file=wf, result_file=rf)
             self.print_log('Done.\n')
 
-        elif self.arg.phase == 'test':
-            if not self.arg.test_feeder_args['debug']:
-                wf = self.arg.model_saved_name + '_wrong.txt'
-                rf = self.arg.model_saved_name + '_right.txt'
-            else:
-                wf = rf = None
-            if self.arg.weights is None:
-                raise ValueError('Please appoint --weights.')
-            self.arg.print_log = False
-            self.print_log('Model:   {}.'.format(self.arg.model))
-            self.print_log('Weights: {}.'.format(self.arg.weights))
-            self.test(epoch=0, save_score=self.arg.save_score, loader_name=['test'], wrong_file=wf, result_file=rf)
-            self.print_log('Done.\n')
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -648,9 +572,9 @@ def import_class(name):
 
 if __name__ == '__main__':
     parser = get_parser()
-
     # load arg form config file
     p = parser.parse_args()
+
     if p.config is not None:
         with open(p.config, 'r') as f:
             default_arg = yaml.load(f, Loader=yaml.FullLoader)

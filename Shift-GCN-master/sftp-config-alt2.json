@@ -14,12 +14,12 @@
     "confirm_sync": false,
     "confirm_overwrite_newer": false,
     
-    "host": "10.112.241.69",
+    "host": "10.112.231.90",
     "user": "dyh",
     "password": "123",
     "port": "33",
     
-    "remote_path": "/home/dyh/Sources/python/algorithm/Shift-GCN-master/",
+    "remote_path": "/home/data1_4t/dyh/Source/python/algorithm/Shift-GCN-master/",
     "ignore_regexes": [
         "\\.sublime-(project|workspace)", "sftp-config(-alt\\d?)?\\.json",
         "sftp-settings\\.json", "/venv/", "\\.svn/", "\\.hg/", "\\.git/",

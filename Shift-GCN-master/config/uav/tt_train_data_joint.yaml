@@ -1,0 +1,54 @@
+Experiment_name: TT-train
+
+# feeder
+feeder: feeders.tt_feeder.TT_Feeder
+train_feeder_args:
+  train_data_path: ./data/UAV/skeleton/random_sample/train_data_joint.npy
+  train_label_path: ./data/UAV/skeleton/random_sample/train_label.pkl
+  val_data_path: ./data/UAV/skeleton/random_sample/val_data_joint.npy
+  val_label_path: ./data/UAV/skeleton/random_sample/val_label.pkl
+  test_data_path: ./data/UAV/skeleton/random_sample/test_data.npy
+  # test_data_path: None
+  debug: False
+  random_choose: False
+  random_shift: False
+  random_move: False
+  window_size: -1
+  normalization: False
+  flag: 'train'
+
+test_feeder_args:
+  train_data_path: None
+  train_label_path: None
+  # val_data_path: None
+  # val_label_path: None
+  val_data_path: ./data/UAV/skeleton/random_sample/val_data_joint.npy
+  val_label_path: ./data/UAV/skeleton/random_sample/val_label.pkl
+  test_data_path: ''
+  # test_data_path: ./data/UAV/skeleton/random_sample/test_data.npy
+  debug: False
+  flag: val
+  # flag: 'test'
+
+# model
+model: model.shift_gcn.Model
+model_args:
+  num_class: 155
+  num_point: 17
+  num_person: 2
+  graph: graph.ntu_rgb_d.Graph
+  graph_args:
+    labeling_mode: 'spatial'
+
+#optim
+weight_decay: 0.0001
+base_lr: 0.05
+step: [60, 80, 100]
+
+# training
+device: [0,1]
+only_train_epoch: 1
+batch_size: 32
+test_batch_size: 32
+num_epoch: 140
+nesterov: True

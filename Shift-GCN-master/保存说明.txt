@@ -1,0 +1,20 @@
+1. 模型保存目录说明(根目录save_models/UAV)：
+random_sample: 在随机划分的数据集上训练、验证,最好的模型：random_sample-67-31620.pt 【val: 66.2%, test: 40.3%】
+remove10: 在所有训练数据上训练，最好的模型：UAV-remov10-random-sample-101-53244.pt 【test: 41.5%】
+
+
+-200帧最好结果，random数据训练模型，老二卡 130次epoch (Val: 69.05%)
+	./save_models/UAV/random_sample/continue-200-frames/continue-200-frames-129-60450.pt
+-200帧多输入shift-gcn，random数据训练模型，新四卡（Val: 69.54%）
+	save_models/multi_input/best/two-stream-shift-gcn-63-29760.pt
+
+-200帧，全部数据训练，shift-gcn，老二卡
+	save_models/all-train-data/all-train-data-200-frames-94-49590.pt
+	
+-200帧，全部数据训练，多输入shift-gcn，老二卡
+all-train-data-multi-input-shift-gcn-82-43326.pt
+
+-200帧 3折交叉验证模型，shift-gcn，新四卡
+- 1-fold: save_models/UAV/1-fold/best/K-fold-train-1-114-40020.pt	(66.4%)
+- 2-fold: save_models/UAV/2-fold/K-fold-train-2-64-22620.pt	(64.65%)
+- 3-fold: save_models/UAV/3-fold/K-fold-train-3-115-40368.pt	(65.75%)
